@@ -4,6 +4,7 @@ from scipy.special import comb
 from scipy.optimize import fsolve
 import numpy as np
 import math
+from numba import njit, prange
 # build delta d_j(i) =0 if i!=j 1 otherwise
 
 def dmps(i,n,dtype=tn.float64):
@@ -128,6 +129,32 @@ def L_qtt( indx, d,dtype = tn.float64):
 
     return tntt.TT(cores)
 
+#Periodic shift matrix
+def P_qtt( indx, d,dtype = tn.float64):
+
+    z = tn.zeros((2,2),dtype=dtype)
+    I = tn.eye(2,dtype=dtype)
+    J = tn.tensor([[0,1],[0,0]],dtype=dtype)
+    Jp = tn.tensor([[0,0],[1,0]],dtype=dtype)
+    H = tn.tensor([[0,1],[1,0]],dtype=dtype)
+
+    P = [ tn.stack([I, H],dim=1).reshape(1,2,2,2), tn.stack([H, I ],dim=1).reshape(1,2,2,2) ] 
+    W = [ tn.stack([ tn.stack([I, Jp],dim=1), tn.stack([z,J],dim=1)]), tn.stack([ tn.stack([Jp, z],dim=1), tn.stack([J,I],dim=1) ]) ]
+    V = [ tn.stack([I, z],dim=0).reshape(2,2,2,1), tn.stack([Jp, J ],dim=0).reshape(2,2,2,1) ]
+
+    bs = f"{indx:0{d}b}"
+
+    cores = [P[0] if bs[0]=='0' else P[1]]
+
+    for b in bs[1:-1]:
+
+        cores.append(W[0] if b == '0' else W[1])
+
+    
+    cores.append(V[0] if bs[-1] == '0' else V[1])
+
+    return tntt.TT(cores)
+
 def qtt_polynomial_cores(a, d,dir='f',basis = 'm',dtype = tn.float64):
     """
     Constructs QTT cores for a polynomial M(x) = sum(a_k * x^k for k=0..p).
@@ -170,6 +197,12 @@ def qtt_polynomial_cores(a, d,dir='f',basis = 'm',dtype = tn.float64):
 
 
     if dir == 'f':
+        
+        if d == 1:
+            G1 = tn.zeros((2),dtype=dtype)
+            G1[0] = a[0]
+            G1[1] = sum(a[k] * phi(1/2,k) for k in range(0, p + 1))
+            return G1
         # First core G1
         G1 = tn.zeros((1, 2, p + 1),dtype=dtype)  # Shape (1, 2, n+1)
         for s in range(p + 1):
@@ -311,10 +344,10 @@ def connect(mps1,mps2,pd=3):
 def hs(n_cores,t='1'):
     
     if t == '1':
-        c1 = tntt.TT(tn.tensor([1,0],dtype=tn.float64).reshape(1,2,1))
+        c1 = tntt.TT(tn.tensor([1,0],dtype=tn.float64))
         return tntt.kron(c1,tntt.ones([2]*(n_cores-1)))
     else:
-        c1 = tntt.TT(tn.tensor([0,1],dtype=tn.float64).reshape(1,2,1))
+        c1 = tntt.TT(tn.tensor([0,1],dtype=tn.float64))
         return tntt.kron(c1,tntt.ones([2]*(n_cores-1)))
     
 def reduce(mps,i):
@@ -474,23 +507,23 @@ def izM(M_z, n):
 
 def zkron(a,b):
 
-    coresA = a.cores 
+    coresA = a.cores
     coresB = b.cores
 
     l = len(coresA)
     zcores = []
     for i in range(len(coresA)):
-        coreA = coresA[i].contiguous()  # Ensure contiguity
-        coreB = coresB[i].contiguous()
+        coreA = coresA[i].numpy()  # Ensure contiguity
+        coreB = coresB[i].numpy()
         try:
-            zcores.append(tn.kron(coreA, coreB))
+            zcores.append( tn.tensor(np.kron(coreA, coreB), dtype=tn.float64 ) )
         except RuntimeError as e:
             print(f"Error at index {i} with shapes {coreA.shape} and {coreB.shape}")
             raise e
 
     return tntt.TT(zcores)
 
-def zkron3(a,b,c):
+def zkron3(a,b,c, dtype=tn.float64):
 
     coresA = a.cores 
     coresB = b.cores
@@ -499,11 +532,11 @@ def zkron3(a,b,c):
     l = len(coresA)
     zcores = []
     for i in range(len(coresA)):
-        coreA = coresA[i].contiguous()  # Ensure contiguity
-        coreB = coresB[i].contiguous()
-        coreC = coresC[i].contiguous()
+        coreA = coresA[i].numpy()
+        coreB = coresB[i].numpy()
+        coreC = coresC[i].numpy()
         try:
-            zcores.append(tn.kron(tn.kron(coreA, coreB),coreC))
+            zcores.append( tn.tensor( np.kron(np.kron(coreA, coreB),coreC), dtype=dtype) )
         except RuntimeError as e:
             print(f"Error at index {i} with shapes {coreA.shape} and {coreB.shape}")
             raise e
@@ -535,74 +568,91 @@ def zukron3(a,b,c):
     coresA = a.cores 
     coresB = b.cores
     coresC = c.cores
-
+    ttm = a.is_ttm 
     l = len(coresA)
     zcores = []
-    for i in range(len(coresA)):
-        coreA = coresA[i].contiguous()  # Ensure contiguity
-        coreB = coresB[i].contiguous()
-        coreC = coresC[i].contiguous()
-        try:
-            rb = int(coreB.shape[0])
-            rbr = int(coreB.shape[2])
-            rc = int(coreC.shape[0])
-            rar = int(coreA.shape[2]) 
-            m1 = tn.kron( tn.kron(coreA, tn.eye(rb,rb).reshape(rb,1,rb) ) , tn.eye(rc, rc).reshape(rc,1,rc )  )
-            m2 = tn.kron( tn.kron( tn.eye( rar, rar ).reshape(rar,1, rar),coreB ), tn.eye( rc,rc ).reshape(rc,1,rc) )
-            m3 = tn.kron( tn.kron( tn.eye( rar, rar ).reshape(rar,1, rar),tn.eye( rbr,rbr ).reshape(rbr,1,rbr) ), coreC )
-            zcores.append(m1)
-            zcores.append(m2)
-            zcores.append(m3)
-        except RuntimeError as e:
-            print(f"Error at index {i} with shapes {coreA.shape} and {coreB.shape}")
-            raise e
-
+    if not ttm:
+        for i in range(len(coresA)):
+            coreA = coresA[i].contiguous()  # Ensure contiguity
+            coreB = coresB[i].contiguous()
+            coreC = coresC[i].contiguous()
+            try:
+                rb = int(coreB.shape[0])
+                rbr = int(coreB.shape[-1])
+                rc = int(coreC.shape[0])
+                rar = int(coreA.shape[-1]) 
+                m1 = tn.kron( tn.kron(coreA, tn.eye(rb,rb).reshape(rb,1,rb) ) , tn.eye(rc, rc).reshape(rc,1,rc )  )
+                m2 = tn.kron( tn.kron( tn.eye( rar, rar ).reshape(rar,1, rar),coreB ), tn.eye( rc,rc ).reshape(rc,1,rc) )
+                m3 = tn.kron( tn.kron( tn.eye( rar, rar ).reshape(rar,1, rar),tn.eye( rbr,rbr ).reshape(rbr,1,rbr) ), coreC )
+                zcores.append(m1)
+                zcores.append(m2)
+                zcores.append(m3)
+            except RuntimeError as e:
+                print(f"Error at index {i} with shapes {coreA.shape} and {coreB.shape}")
+                raise 
+    else:
+        for i in range(len(coresA)):
+            coreA = coresA[i].contiguous()  # Ensure contiguity
+            coreB = coresB[i].contiguous()
+            coreC = coresC[i].contiguous()
+            try:
+                rb = int(coreB.shape[0])
+                rbr = int(coreB.shape[-1])
+                rc = int(coreC.shape[0])
+                rar = int(coreA.shape[-1]) 
+                m1 = tn.kron( tn.kron(coreA, tn.eye(rb,rb).reshape(rb,1,1,rb) ) , tn.eye(rc, rc).reshape(rc,1,1,rc )  )
+                m2 = tn.kron( tn.kron( tn.eye( rar, rar ).reshape(rar,1,1, rar),coreB ), tn.eye( rc,rc ).reshape(rc,1,1,rc) )
+                m3 = tn.kron( tn.kron( tn.eye( rar, rar ).reshape(rar,1,1, rar),tn.eye( rbr,rbr ).reshape(rbr,1,1,rbr) ), coreC )
+                zcores.append(m1)
+                zcores.append(m2)
+                zcores.append(m3)
+            except RuntimeError as e:
+                print(f"Error at index {i} with shapes {coreA.shape} and {coreB.shape}")
+                raise 
     return tntt.TT(zcores)
 
+
 def z_order_to_normal_torch(z_order_tensor, rows, cols):
-    """
-    Map a 2D array from Z-order to normal order using Pytn.
-
-    Parameters:
-        z_order_tensor (tn.Tensor): 1D tensor in Z-order.
-        rows (int): Number of rows in the normal array.
-        cols (int): Number of columns in the normal array.
-
-    Returns:
-        tn.Tensor: 2D tensor in normal order.
-    """
-    def interleave_bits(x, y):
-        """
-        Interleave bits of x and y for Morton (Z) order.
-        """
-        z = 0
-        for i in range(max(x.bit_length(), y.bit_length())):
-            z |= ((x >> i) & 1) << (2 * i + 1)
-            z |= ((y >> i) & 1) << (2 * i)
-        return z
-
-    # Generate all (row, col) indices
     row_indices = tn.arange(rows, dtype=tn.int64)
     col_indices = tn.arange(cols, dtype=tn.int64)
-
-    # Create a grid of indices
     grid_rows, grid_cols = tn.meshgrid(row_indices, col_indices, indexing="ij")
-    
-    # Flatten the grid
     flat_rows = grid_rows.flatten()
     flat_cols = grid_cols.flatten()
 
-    # Compute Z-order indices for the entire grid
-    z_indices = tn.tensor([interleave_bits(r.item(), c.item()) for r, c in zip(flat_rows, flat_cols)])
+    def part1by1(n):
+        n = (n | (n << 8)) & 0x00FF00FF
+        n = (n | (n << 4)) & 0x0F0F0F0F
+        n = (n | (n << 2)) & 0x33333333
+        n = (n | (n << 1)) & 0x55555555
+        return n
 
-    # Map Z-order tensor to normal order
-    normal_tensor = tn.zeros((rows, cols), dtype=z_order_tensor.dtype)
-    for idx, z_idx in enumerate(z_indices):
-        if z_idx < z_order_tensor.numel():  # Ensure within bounds
-            r, c = divmod(idx, cols)
-            normal_tensor[r, c] = z_order_tensor[z_idx]
+    morton = (part1by1(flat_rows) << 1) | part1by1(flat_cols)
+    total = rows * cols
+    normal_flat = tn.zeros(total, dtype=z_order_tensor.dtype, device=z_order_tensor.device)
+    valid_mask = morton < z_order_tensor.numel()
+    normal_flat[tn.nonzero(valid_mask).squeeze()] = z_order_tensor[morton[valid_mask]]
+    return normal_flat.reshape(rows, cols)
 
-    return normal_tensor
+
+@njit(parallel=True, fastmath=True)
+def part1by1(n):
+    n = (n | (n << 8)) & 0x00FF00FF
+    n = (n | (n << 4)) & 0x0F0F0F0F
+    n = (n | (n << 2)) & 0x33333333
+    n = (n | (n << 1)) & 0x55555555
+    return n
+
+@njit(parallel=True, fastmath=True)
+def z_order_to_normal(z_order_array, rows, cols):
+    normal_array = np.empty((rows, cols), dtype=z_order_array.dtype)
+    for r in prange(rows):
+        for c in range(cols):
+            morton_idx = (part1by1(r) << 1) | part1by1(c)
+            if morton_idx < z_order_array.size:
+                normal_array[r, c] = z_order_array[morton_idx]
+            else:
+                normal_array[r, c] = 0
+    return normal_array
 
 
 
@@ -752,14 +802,14 @@ def kron3(a,b,c):
     return tntt.kron(a,tntt.kron(b,c))
 
 
-def op_reshape(op):
+def op_reshape(op,d=2):
 
     cores = op.cores
     ncores = []
     for i in range(len(cores)):
         c = cores[i]
         dims = c.shape
-        ncores.append(c.reshape(dims[0],2,2,dims[-1]))
+        ncores.append(c.reshape(dims[0],d,d,dims[-1]))
 
     return tntt.TT(ncores)
 
