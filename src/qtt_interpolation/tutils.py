@@ -297,21 +297,24 @@ def zkron3(a,b,c):
 
     return tntt.TT(zcores)
 
-def zukron(a,b):
-
-    coresA = a.cores 
+def zukron(a, b):
+    coresA = a.cores
     coresB = b.cores
-
-    l = len(coresA)
+    ttm = getattr(a, 'is_ttm', False)
     zcores = []
     for i in range(len(coresA)):
-        coreA = coresA[i].contiguous()  # Ensure contiguity
+        coreA = coresA[i].contiguous()
         coreB = coresB[i].contiguous()
         try:
-            m1 = tn.kron(coreA, tn.eye( int(coreB.shape[0]) , int(coreB.shape[0])).reshape(int(coreB.shape[0]) , 1,int(coreB.shape[0]) ) )
-            m2 = tn.kron(tn.eye( int(coreA.shape[2]) , int(coreA.shape[2]) ).reshape(int(coreA.shape[2]) , 1, int(coreA.shape[2])),coreB )
-            zcores.append(m1)
-            zcores.append(m2)
+            if not ttm:
+                m1 = tn.kron(coreA, tn.eye(int(coreB.shape[0]), int(coreB.shape[0])).reshape(int(coreB.shape[0]), 1, int(coreB.shape[0])))
+                m2 = tn.kron(tn.eye(int(coreA.shape[2]), int(coreA.shape[2])).reshape(int(coreA.shape[2]), 1, int(coreA.shape[2])), coreB)
+            else:
+                rb = int(coreB.shape[0])
+                rar = int(coreA.shape[-1]) 
+                m1 = tn.kron(coreA, tn.eye(rb,rb).reshape(rb,1,1,rb) ) 
+                m2 = tn.kron( tn.eye( rar, rar ).reshape(rar,1,1, rar),coreB )
+            zcores += [m1, m2]
         except RuntimeError as e:
             print(f"Error at index {i} with shapes {coreA.shape} and {coreB.shape}")
             raise e
