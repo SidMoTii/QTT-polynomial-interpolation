@@ -1,6 +1,6 @@
 import torch as tn
 import torchtt as tntt
-from .tutils import *
+from .utils import *
 
 def d_coeff_mat(M, order=0):
     if order == 0:

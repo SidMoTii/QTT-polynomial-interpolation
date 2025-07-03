@@ -5,6 +5,9 @@ from scipy.optimize import fsolve
 import numpy as np
 import math
 from numba import njit, prange
+import numba as nb
+import matplotlib.pyplot as plt
+
 # build delta d_j(i) =0 if i!=j 1 otherwise
 
 def dmps(i,n,dtype=tn.float64):
@@ -543,26 +546,28 @@ def zkron3(a,b,c, dtype=tn.float64):
 
     return tntt.TT(zcores)
 
-def zukron(a,b):
-
-    coresA = a.cores 
+def zukron(a, b):
+    coresA = a.cores
     coresB = b.cores
-
-    l = len(coresA)
+    ttm = getattr(a, 'is_ttm', False)
     zcores = []
     for i in range(len(coresA)):
-        coreA = coresA[i].contiguous()  # Ensure contiguity
+        coreA = coresA[i].contiguous()
         coreB = coresB[i].contiguous()
         try:
-            m1 = tn.kron(coreA, tn.eye( int(coreB.shape[0]) , int(coreB.shape[0])).reshape(int(coreB.shape[0]) , 1,int(coreB.shape[0]) ) )
-            m2 = tn.kron(tn.eye( int(coreA.shape[2]) , int(coreA.shape[2]) ).reshape(int(coreA.shape[2]) , 1, int(coreA.shape[2])),coreB )
-            zcores.append(m1)
-            zcores.append(m2)
+            if not ttm:
+                m1 = tn.kron(coreA, tn.eye(int(coreB.shape[0]), int(coreB.shape[0])).reshape(int(coreB.shape[0]), 1, int(coreB.shape[0])))
+                m2 = tn.kron(tn.eye(int(coreA.shape[2]), int(coreA.shape[2])).reshape(int(coreA.shape[2]), 1, int(coreA.shape[2])), coreB)
+            else:
+                rb = int(coreB.shape[0])
+                rar = int(coreA.shape[-1]) 
+                m1 = tn.kron(coreA, tn.eye(rb,rb).reshape(rb,1,1,rb) ) 
+                m2 = tn.kron( tn.eye( rar, rar ).reshape(rar,1,1, rar),coreB )
+            zcores += [m1, m2]
         except RuntimeError as e:
             print(f"Error at index {i} with shapes {coreA.shape} and {coreB.shape}")
             raise e
     return tntt.TT(zcores)
-
 def zukron3(a,b,c):
 
     coresA = a.cores 
@@ -882,3 +887,80 @@ def SO_qtt( l,dtype = tn.float64):
 def iO_qtt(d, dtype=tn.float64):
     X = tn.tensor([[0,1],[1,0]],dtype=dtype).reshape(1,2,2,1)
     return tntt.TT([X]*d)
+
+
+def z_order_to_normal_3d(z_order_tensor, dim0, dim1, dim2):
+    def part1by2(n):
+        n &= 0x7FFF  # keep only 15 bits
+        n = (n | (n << 32)) & 0x1F00000000FFFF
+        n = (n | (n << 16)) & 0x1F0000FF0000FF
+        n = (n | (n << 8))  & 0x100F00F00F00F00F
+        n = (n | (n << 4))  & 0x10C30C30C30C30C3
+        n = (n | (n << 2))  & 0x1249249249249249
+        return n
+
+    r = tn.arange(dim0, dtype=tn.int64, device=z_order_tensor.device)
+    c = tn.arange(dim1, dtype=tn.int64, device=z_order_tensor.device)
+    d = tn.arange(dim2, dtype=tn.int64, device=z_order_tensor.device)
+    R, C, D = tn.meshgrid(r, c, d, indexing='ij')
+
+    Rf = R.flatten()
+    Cf = C.flatten()
+    Df = D.flatten()
+
+    morton = (part1by2(Rf) << 2) | (part1by2(Cf) << 1) | part1by2(Df)
+
+    normal = tn.zeros((dim0, dim1, dim2), dtype=z_order_tensor.dtype, device=z_order_tensor.device)
+    valid = morton < z_order_tensor.numel()
+    normal.view(-1)[valid] = z_order_tensor[morton[valid]]
+
+    return normal
+
+@nb.njit     # no parallel=True
+def z_order_to_normal_nopara(z_order, normal, dim0, dim1, dim2):
+    n = z_order.size
+    for i in range(n):
+        code = i
+        x = y = z = bit = 0
+        while code:
+            z |= (code & 1) << bit;  code >>= 1
+            y |= (code & 1) << bit;  code >>= 1
+            x |= (code & 1) << bit;  code >>= 1
+            bit += 1
+
+        if x < dim0 and y < dim1 and z < dim2:
+            normal[x, y, z] = z_order[i]
+    return normal
+
+def compute_velocity_from_stream_function(psi, L=2 * np.pi):
+    N = psi.shape[0]
+    dx = L / N
+    dy = L / N
+    u = np.zeros_like(psi)
+    v = np.zeros_like(psi)
+    u[1:-1, 1:-1] = (psi[1:-1, 2:] - psi[1:-1, :-2]) / (2 * dy)
+    v[1:-1, 1:-1] = -(psi[2:, 1:-1] - psi[:-2, 1:-1]) / (2 * dx)
+    return u, v
+
+def generate_divergence_free_kolmogorov_2d(
+    N=128, L=2 * np.pi, exponent=-5 / 3, seed=None
+):
+    if seed is not None:
+        np.random.seed(seed)
+    kx = np.fft.fftfreq(N, d=L / N) * 2.0 * np.pi
+    ky = np.fft.fftfreq(N, d=L / N) * 2.0 * np.pi
+    KX, KY = np.meshgrid(kx, ky, indexing="ij")
+    k = np.sqrt(KX**2 + KY**2)
+    k[0, 0] = 1.0
+    amp = k ** ((exponent - 1) / 2.0)
+    amp[0, 0] = 0.0
+    phase_x = np.exp(1j * 2.0 * np.pi * np.random.rand(N, N))
+    phase_y = np.exp(1j * 2.0 * np.pi * np.random.rand(N, N))
+    w_x = amp * phase_x
+    w_y = amp * phase_y
+    dot = KX * w_x + KY * w_y
+    u_hat = w_x - (KX * dot) / (k**2)
+    v_hat = w_y - (KY * dot) / (k**2)
+    u = np.fft.ifft2(u_hat).real
+    v = np.fft.ifft2(v_hat).real
+    return u, v

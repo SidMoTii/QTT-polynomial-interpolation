@@ -1,0 +1,119 @@
+import torch as tn
+import numpy as np
+
+
+def ind_to_r(I, a=0, b=1, d=1, pdp=1):
+    """
+    This function maps a multi-digit index to a real number in [a, b)^d.
+    Each entry in I[k] is an integer in 0,...,2**pdp-1 and is expanded to its binary representation.
+    The resulting binary digits are concatenated to form a long vector of 0's and 1's for each sample.
+    Returns a list of size d.
+    """
+    # I: shape (num_samples, d), each entry in 0,...,2**pdp-1
+    num_samples = I.shape[0]
+    l = I.shape[1] * pdp  # total number of binary digits per sample
+    # Convert each entry to binary and concatenate
+    I_bin = ((I.unsqueeze(-1) >> tn.arange(pdp-1, -1, -1)) & 1).reshape(num_samples, -1)
+    powers = tn.tensor([2**(-i) for i in range(1, l//d+1)],dtype=tn.float64)
+    result = []
+    for j in range(d):
+        idx = tn.arange(j, l, d)
+        group = I_bin[:, idx]
+        wI = group * powers
+        x = (b - a) * wI.sum(axis=1) + a
+        result.append(x)
+    return result
+
+def circle(x,y):
+    """
+    This function creates a mask for the points in the grid.
+    It returns a boolean tensor where True indicates that the point is inside the unit square.
+    """
+    r=0.25
+    return tn.where((x-0.5)**2 + (y-0.5)**2 <= r**2, 1, 0)
+
+def correlated_gaussian_pdf(x, y, mean=None, corr=None):
+    """
+    Compute the PDF value of a 2D Gaussian at point (x, y) with given mean and correlation matrix.
+    Args:
+        x (float or torch.Tensor): x-coordinate(s)
+        y (float or torch.Tensor): y-coordinate(s)
+        mean (list or None): Mean of the distribution. If None, uses [0, 0].
+        corr (2x2 torch.Tensor or None): Correlation matrix. If None, uses identity.
+    Returns:
+        torch.Tensor: PDF value(s) at (x, y)
+    """
+    if mean is None:
+        mean = tn.zeros(2, dtype=tn.float64)
+    if corr is None:
+        corr = tn.eye(2,dtype=tn.float64)
+    pos = tn.stack([x, y], dim=-1)
+    mean = tn.tensor(mean, dtype=pos.dtype, device=pos.device)
+    corr_inv = tn.linalg.inv(corr)
+    det_corr = tn.linalg.det(corr)
+    diff = pos - mean
+    exponent = -0.5 * tn.sum(diff @ corr_inv * diff, dim=-1)
+    norm = 1.0 / (2 * tn.pi * tn.sqrt(det_corr))
+    return norm * tn.exp(exponent)
+
+def circles(x,y):
+    """
+    This function creates a mask for the points in the grid.
+    It returns a boolean tensor where True indicates that the point is inside the unit square.
+    """
+    r=0.25
+    return tn.where((x-0.5)**2 + (y-0.5)**2 <= r**2, 1, tn.exp(-100*( (x-0.5)**2 + (y-0.5)**2 - r**2) ))
+
+def ind_to_r_ten(I, a=0, b=1, d=1, pdp=1):
+    """
+    This function maps a multi-digit index to a real number in [a, b)^d.
+    Each entry in I[k] is an integer in 0,...,2**pdp-1 and is expanded to its binary representation.
+    The resulting binary digits are concatenated to form a long vector of 0's and 1's for each sample.
+    Returns a numpy array of shape (num_samples, d).
+    """
+    I = np.asarray(I)
+    num_samples = I.shape[0]
+    l = I.shape[1]*pdp  # total number of binary digits per sample
+    # Convert each entry to binary and concatenate
+    I_bin = ((I[..., None] >> np.arange(pdp-1, -1, -1)) & 1).reshape(num_samples, -1)
+    powers = np.array([2**(-i) for i in range(1, l//d+1)])
+    result = np.empty((num_samples, d))
+    for j in range(d):
+        idx = np.arange(j, l, d)
+        group = I_bin[:, idx]
+        wI = group * powers
+        x = (b - a) * wI.sum(axis=1) + a
+        result[:, j] = x
+    return result
+
+def circle_ten(X):
+    """
+    This function creates a mask for the points in the grid.
+    It returns a boolean tensor where True indicates that the point is inside the unit square.
+    """
+    r=0.125
+    x, y = X[:, 0], X[:, 1]
+    return np.where((x-0.5)**2 + (y-0.5)**2 <= r**2, 1, np.exp(-100*( (x-0.5)**2 + (y-0.5)**2 - r**2) ))
+
+def correlated_gaussian_pdf_ten(X, mean=None, corr=None):
+    """
+    Compute the PDF value of a 2D Gaussian at points X with given mean and correlation matrix.
+    Args:
+        X (np.ndarray): shape (num_samples, 2), each row is a point [x, y]
+        mean (list or None): Mean of the distribution. If None, uses [0, 0].
+        corr (2x2 np.ndarray or None): Correlation matrix. If None, uses identity.
+    Returns:
+        np.ndarray: PDF value(s) at each row of X
+    """
+    X = np.asarray(X)
+    if mean is None:
+        mean = [0.0, 0.0]
+    if corr is None:
+        corr = np.eye(2)
+    mean = np.array(mean, dtype=X.dtype)
+    corr_inv = np.linalg.inv(corr)
+    det_corr = np.linalg.det(corr)
+    diff = X - mean
+    exponent = -0.5 * np.sum(diff @ corr_inv * diff, axis=1)
+    norm = 1.0 / (2 * np.pi * np.sqrt(det_corr))
+    return norm * np.exp(exponent)
