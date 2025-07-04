@@ -47,6 +47,8 @@ def correlated_gaussian_pdf(x, y, mean=None, corr=None):
         mean = tn.zeros(2, dtype=tn.float64)
     if corr is None:
         corr = tn.eye(2,dtype=tn.float64)
+    elif type(corr) is not tn.Tensor:
+        corr = tn.tensor(corr,dtype=tn.float64)
     pos = tn.stack([x, y], dim=-1)
     mean = tn.tensor(mean, dtype=pos.dtype, device=pos.device)
     corr_inv = tn.linalg.inv(corr)
@@ -56,13 +58,13 @@ def correlated_gaussian_pdf(x, y, mean=None, corr=None):
     norm = 1.0 / (2 * tn.pi * tn.sqrt(det_corr))
     return norm * tn.exp(exponent)
 
-def circles(x,y):
+def circles(x,y,alpha=100):
     """
     This function creates a mask for the points in the grid.
     It returns a boolean tensor where True indicates that the point is inside the unit square.
     """
     r=0.25
-    return tn.where((x-0.5)**2 + (y-0.5)**2 <= r**2, 1, tn.exp(-100*( (x-0.5)**2 + (y-0.5)**2 - r**2) ))
+    return tn.where((x-0.5)**2 + (y-0.5)**2 <= r**2, 1, tn.exp(-alpha*( (x-0.5)**2 + (y-0.5)**2 - r**2) ))
 
 def ind_to_r_ten(I, a=0, b=1, d=1, pdp=1):
     """
@@ -86,14 +88,14 @@ def ind_to_r_ten(I, a=0, b=1, d=1, pdp=1):
         result[:, j] = x
     return result
 
-def circle_ten(X):
+def circle_ten(X,alpha=100):
     """
     This function creates a mask for the points in the grid.
     It returns a boolean tensor where True indicates that the point is inside the unit square.
     """
     r=0.125
     x, y = X[:, 0], X[:, 1]
-    return np.where((x-0.5)**2 + (y-0.5)**2 <= r**2, 1, np.exp(-100*( (x-0.5)**2 + (y-0.5)**2 - r**2) ))
+    return np.where((x-0.5)**2 + (y-0.5)**2 <= r**2, 1, np.exp(-alpha*( (x-0.5)**2 + (y-0.5)**2 - r**2) ))
 
 def correlated_gaussian_pdf_ten(X, mean=None, corr=None):
     """
