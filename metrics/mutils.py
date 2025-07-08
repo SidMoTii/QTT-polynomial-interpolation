@@ -24,12 +24,12 @@ def ind_to_r(I, a=0, b=1, d=1, pdp=1):
         result.append(x)
     return result
 
-def circle(x,y):
+def circle(x,y,r=0.125):
     """
     This function creates a mask for the points in the grid.
     It returns a boolean tensor where True indicates that the point is inside the unit square.
     """
-    r=0.25
+    
     return tn.where((x-0.5)**2 + (y-0.5)**2 <= r**2, 1, 0)
 
 def correlated_gaussian_pdf(x, y, mean=None, corr=None):
@@ -58,12 +58,11 @@ def correlated_gaussian_pdf(x, y, mean=None, corr=None):
     norm = 1.0 / (2 * tn.pi * tn.sqrt(det_corr))
     return norm * tn.exp(exponent)
 
-def circles(x,y,alpha=100):
+def circles(x,y,alpha=100,r=0.125):
     """
     This function creates a mask for the points in the grid.
     It returns a boolean tensor where True indicates that the point is inside the unit square.
     """
-    r=0.25
     return tn.where((x-0.5)**2 + (y-0.5)**2 <= r**2, 1, tn.exp(-alpha*( (x-0.5)**2 + (y-0.5)**2 - r**2) ))
 
 def ind_to_r_ten(I, a=0, b=1, d=1, pdp=1):
@@ -88,12 +87,11 @@ def ind_to_r_ten(I, a=0, b=1, d=1, pdp=1):
         result[:, j] = x
     return result
 
-def circle_ten(X,alpha=100):
+def circle_ten(X,alpha=100,r=0.125):
     """
     This function creates a mask for the points in the grid.
     It returns a boolean tensor where True indicates that the point is inside the unit square.
     """
-    r=0.125
     x, y = X[:, 0], X[:, 1]
     return np.where((x-0.5)**2 + (y-0.5)**2 <= r**2, 1, np.exp(-alpha*( (x-0.5)**2 + (y-0.5)**2 - r**2) ))
 

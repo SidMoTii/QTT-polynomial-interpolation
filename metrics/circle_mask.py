@@ -7,8 +7,8 @@ import torch as tn
 import torchtt as tntt
 import teneva as ten
 import numpy as np
-import matplotlib.pyplot as plt
 from time import time
+import json
 
 from src.qtt_interpolation.utils import *
 from src.qtt_interpolation.int_tools import *
@@ -19,12 +19,19 @@ from metrics.mutils import*
 # %% Configuration
 
 alpha = 100
-ftn = lambda X,Y : circles(X,Y,alpha=alpha)
-ften = lambda X: circle_ten(X,alpha=alpha)
+R = 0.125
+ftn = lambda X,Y : circles(X,Y,alpha=alpha,r=R)
+ften = lambda X: circle_ten(X,alpha=alpha,r=R)
 # %% Coarse grid 
 
 p_coarse = 10
 num_points = 2**p_coarse
+
+
+# %% Data preparation
+# prepare output directory & JSONL file
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+jsonl_path = os.path.join(BASE_DIR, 'metrics', 'data', 'mask_results.jsonl')
 
 
 # %% Gather Data for Cross
@@ -57,7 +64,7 @@ for p in range(p_coarse+1, pmax+1):
 
         ncoarse = [ 2,2]*p_coarse
         m         = None  # Number of calls to target function
-        e         =  1e-6   # Desired accuracy
+        e         =  1e-7   # Desired accuracy
         nswp      = 3   # Sweep number
         r         = 30      # TT-rank of the initial tensor
         dr_min    = 2      # Cross parameter (minimum number of added rows)
@@ -85,7 +92,7 @@ for p in range(p_coarse+1, pmax+1):
 
         n = [ 2,2]*pfinal   # Shape of the tensor
         m         = None  # Number of calls to target function
-        e         =  1e-6   # Desired accuracy
+        e         =  1e-7   # Desired accuracy
         nswp      = 3   # Sweep number
         r         = 30 + (p-p_coarse)*5      # TT-rank of the initial tensor
         dr_min    = 2      # Cross parameter (minimum number of added rows)
@@ -96,9 +103,9 @@ for p in range(p_coarse+1, pmax+1):
         Y = ten.cross(f, Y, m, e, nswp, dr_min=dr_min, dr_max=dr_max, cache=cache,m_cache_scale=5,log=True,info=info_fine)
         Yr = ten.truncate(Y, 1e-14) 
 
-        '''
+        ''' 
         #validate over 1e5 points
-        m_tst = int(1e6)
+        m_tst = int(1e5)
         # Random multi-indices for the test points:
         I_tst = np.vstack([np.random.choice(k, m_tst) for k in n]).T
         y_tst = f(I_tst)
@@ -112,6 +119,7 @@ for p in range(p_coarse+1, pmax+1):
     
         y_tti_svd = ten.get_many(mask_svd_i, I_tst)
         e_tstti_svd = np.linalg.norm(y_tti - y_tst) / norm
+        print('errors', e_tst,e_tstti,e_tstti_svd)
         '''
         print('doing errors...',flush=True)
         N = 2**pfinal
@@ -119,40 +127,63 @@ for p in range(p_coarse+1, pmax+1):
         y = tn.linspace(0, 1, N + 1, dtype=tn.float64)[:-1]
         X, Y = tn.meshgrid(x, y, indexing='ij')
         mask_grid = ftn(X, Y)
-        mask_full = zM(mask_grid,p_coarse)
-        norm = tn.linalg.norm(mask_full)
+        mask_full = zM(mask_grid,pfinal)
+        norm = tn.linalg.norm(mask_grid)
+
 
         y_tt = tntt.TT( [tn.tensor(c,dtype=tn.float64) for c in Yr] ).full().reshape(N,N)
-        e_tst = np.linalg.norm(mask_full - y_tt) / norm
+        e_tst = tn.linalg.norm(mask_full - y_tt) / norm
 
         y_tti = tntt.TT( [tn.tensor(c,dtype=tn.float64) for c in mask_ttc_i] ).full().reshape(N,N)
-        e_tstti = np.linalg.norm(mask_full - y_tti) / norm
+        e_tstti = tn.linalg.norm(mask_full - y_tti) / norm
     
         y_tti_svd = tntt.TT( [tn.tensor(c,dtype=tn.float64) for c in mask_svd_i] ).full().reshape(N,N)
-        e_tstti_svd = np.linalg.norm(mask_full - y_tti_svd) / norm
+        e_tstti_svd = tn.linalg.norm(mask_full - y_tti_svd) / norm
 
-        mode.append('cross')
-        scale.append(p)
-        error.append(e_tst)
-        T.append(info_fine['t'])
-        rmax.append(np.max(ten.ranks(Yr)))
-        ernk.append(ten.erank(Yr))
+        # Save only the last 3 entries: 'cross', 'cross_int', 'svd_int'
+        mode.extend(['cross', 'cross_int', 'svd_int'])
+        scale.extend([p, p, p])
+        error.extend([e_tst, e_tstti, e_tstti_svd])
+        T.extend([info_fine['t'], t_ttc_i + info_coarse['t'], t_svd_i + t_mask])
+        rmax.extend([
+            np.max(ten.ranks(Yr)),
+            np.max(ten.ranks(mask_ttc_i)),
+            np.max(ten.ranks(mask_svd_i))
+        ])
+        ernk.extend([
+            ten.erank(Yr),
+            ten.erank(mask_ttc_i),
+            ten.erank(mask_svd_i)
+        ])
 
-        mode.append('cross_int')
-        scale.append(p)
-        error.append(e_tstti)
-        T.append(t_ttc_i + info_coarse['t'])
-        rmax.append(np.max(ten.ranks(mask_ttc_i)))
-        ernk.append(ten.erank(mask_ttc_i))
+        print((i+1)/reps, end='\r', flush=True)
 
-        mode.append('svd_int')
-        scale.append(p)
-        error.append(e_tstti_svd)
-        T.append(t_svd_i + t_mask)
-        rmax.append(np.max(ten.ranks(mask_svd_i)))
-        ernk.append(ten.erank(mask_svd_i))
+        # Save the last 3 rows as JSON lines
+        for j in range(-3, 0):
+            raw_row = {
+            'method': mode[j],
+            'scale':  scale[j],
+            'error':  error[j],
+            'time':   T[j],
+            'rmax':   rmax[j],
+            'erank':  ernk[j]
+            }
+            # Convert any Tensor or NumPy scalar to plain Python
+            safe_row = {}
+            for k, v in raw_row.items():
+                if isinstance(v, tn.Tensor):
+                    safe_row[k] = v.item() if v.numel() == 1 else v.tolist()
+                elif isinstance(v, np.generic):
+                    safe_row[k] = v.item()
+                else:
+                    safe_row[k] = v
 
-        print((i+1)/reps, end='\r',flush=True)
+            with open(jsonl_path, 'a') as f:
+                f.write(json.dumps(safe_row) + '\n')
+                f.flush()
+                os.fsync(f.fileno())
+
+        print(f"  rep {i+1}/{reps} saved", end='\r', flush=True)
 
 
 

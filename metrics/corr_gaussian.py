@@ -8,6 +8,7 @@ import torchtt as tntt
 import teneva as ten
 import numpy as np
 from time import time
+import json
 
 from src.qtt_interpolation.utils import *
 from src.qtt_interpolation.int_tools import *
@@ -31,6 +32,11 @@ corr = np.array([[1.0, 0.5],
 p_coarse = 10
 num_points = 2**p_coarse
 l = 4
+
+# %% Data preparation
+# prepare output directory & JSONL file
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+jsonl_path = os.path.join(BASE_DIR, 'metrics', 'data', 'corr_gaussian_results_2.jsonl')
 
 # %% Gather Data for Cross
 
@@ -89,7 +95,7 @@ for p in range(p_coarse+1, pmax+1):
         gauss_svd_i = [c.numpy() for c in gauss_svd_i.cores]
 
         t = time()
-        gauss_ttc_i = qtt_skcubic2d( tntt.TT([tn.tensor(c,dtype=tn.float64) for c in gauss_ttc]) ,pfinal, fboundary, eps=1e-10, order=1)
+        gauss_ttc_i = qtt_skcubic2d( tntt.TT([tn.tensor(c,dtype=tn.float64) for c in gauss_ttc]) ,pfinal, fboundary, eps=1e-12, order=1)
         t_ttc_i = time() - t
         gauss_ttc_i = [c.numpy() for c in gauss_ttc_i.cores]
 
@@ -98,8 +104,8 @@ for p in range(p_coarse+1, pmax+1):
         n = [ 2,2]*pfinal   # Shape of the tensor
         m         = None  # Number of calls to target function
         e         =  1e-10   # Desired accuracy
-        nswp      = 4   # Sweep number
-        r         = 30      # TT-rank of the initial tensor
+        nswp      = 5  # Sweep number
+        r         = 20 + (p-p_coarse)*5      # TT-rank of the initial tensor
         dr_min    = 2      # Cross parameter (minimum number of added rows)
         dr_max    = 5      # Cross parameter (maximum number of added rows)
 
@@ -127,23 +133,24 @@ for p in range(p_coarse+1, pmax+1):
         '''
         print('doing errors...',flush=True)
         N = 2**pfinal
-        x = tn.linspace(0, 1, N + 1, dtype=tn.float64)[:-1]
-        y = tn.linspace(0, 1, N + 1, dtype=tn.float64)[:-1]
+        x = tn.linspace(-l, l, N + 1, dtype=tn.float64)[:-1]
+        y = tn.linspace(-l, l, N + 1, dtype=tn.float64)[:-1]
         X, Y = tn.meshgrid(x, y, indexing='ij')
         mask_grid = correlated_gaussian_pdf(X, Y, mean=[0, 0], corr=corr)
-        mask_full = zM(mask_grid,p_coarse)
+        mask_full = zM(mask_grid,pfinal)
         norm = tn.linalg.norm(mask_full)
 
         y_tt = tntt.TT( [tn.tensor(c,dtype=tn.float64) for c in Yr] ).full().reshape(N,N)
-        e_tst = np.linalg.norm(mask_full - y_tt) / norm
+        e_tst = tn.linalg.norm(mask_full - y_tt) / norm
 
         y_tti = tntt.TT( [tn.tensor(c,dtype=tn.float64) for c in gauss_ttc_i] ).full().reshape(N,N)
-        e_tstti = np.linalg.norm(mask_full - y_tti) / norm
+        e_tstti = tn.linalg.norm(mask_full - y_tti) / norm
     
         y_tti_svd = tntt.TT( [tn.tensor(c,dtype=tn.float64) for c in gauss_svd_i] ).full().reshape(N,N)
-        e_tstti_svd = np.linalg.norm(mask_full - y_tti_svd) / norm
+        e_tstti_svd = tn.linalg.norm(mask_full - y_tti_svd) / norm
 
 
+        # Append results for all three methods
         mode.append('cross')
         scale.append(p)
         error.append(e_tst)
@@ -154,7 +161,7 @@ for p in range(p_coarse+1, pmax+1):
         mode.append('cross_int')
         scale.append(p)
         error.append(e_tstti)
-        T.append(t_ttc_i+t_boundaries + info_coarse['t'])
+        T.append(t_ttc_i + t_boundaries + info_coarse['t'])
         rmax.append(np.max(ten.ranks(gauss_ttc_i)))
         ernk.append(ten.erank(gauss_ttc_i))
 
@@ -165,8 +172,35 @@ for p in range(p_coarse+1, pmax+1):
         rmax.append(np.max(ten.ranks(gauss_svd_i)))
         ernk.append(ten.erank(gauss_svd_i))
 
-        print((i+1)/reps, end='\r',flush=True)
+        print((i+1)/reps, end='\r', flush=True)
+        print('error',error,flush=True)
 
+        # Save the last three entries (cross, cross_int, svd_int) to JSONL
+        for j in range(3):
+            raw_row = {
+            'method': mode[-3 + j],
+            'scale':  scale[-3 + j],
+            'error':  error[-3 + j],
+            'time':   T[-3 + j],
+            'rmax':   rmax[-3 + j],
+            'erank':  ernk[-3 + j]
+            }
+            # Convert any Tensor or NumPy scalar to plain Python
+            safe_row = {}
+            for k, v in raw_row.items():
+                if isinstance(v, tn.Tensor):
+                    safe_row[k] = v.item() if v.numel() == 1 else v.tolist()
+                elif isinstance(v, np.generic):
+                    safe_row[k] = v.item()
+                else:
+                    safe_row[k] = v
+
+            with open(jsonl_path, 'a') as f:
+                f.write(json.dumps(safe_row) + '\n')
+                f.flush()
+                os.fsync(f.fileno())
+
+        print(f"  rep {i+1}/{reps} saved", end='\r', flush=True)
 
 
 # %% Collect interpolation data
@@ -182,5 +216,5 @@ df = pd.DataFrame({
 
 # %% Save results
 
-df.to_csv('./metrics/data/corr_gaussian_results.csv', index=False)
+df.to_csv('./metrics/data/corr_gaussian_results_2.csv', index=False)
 
