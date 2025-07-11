@@ -97,3 +97,39 @@ def qttsin(ncores,a=2*np.pi,b=0):
 
     return [tn.tensor(core, dtype=tn.float64) for core in cores]
 
+
+
+def mid_point_1d(ncores,octaves=None, nrank=10,var=1,eps=1e-10, H = 1):
+
+    if octaves==None:
+        octaves = ncores
+    depth = ncores
+    w = 2**(-H)
+    r = nrank
+
+    for i in range(1,octaves+1):
+        phi1 = tntt.TT(qtt_polynomial_cores([1,-1], depth-i))
+        phi2 = tntt.TT(qtt_polynomial_cores([0,1], depth-i))
+        # define shift matrix
+        sm = P_qtt( 2**i -1, i)
+        if i == 1:
+            noise = tntt.TT(tn.rand(2, dtype=tn.float64))
+            M = tntt.TT(tn.tensor([[0,1],[1,0]],dtype=tn.float64),[(2,2)])
+            mpsm = tntt.kron(noise,phi1) + tntt.kron( (M@noise).round(), phi2)
+            #mpsm = mpsm.round(eps)
+        
+        elif i == ncores :
+            delta = tntt.kron(tntt.ones([2]*(ncores-1)),tntt.TT(tn.tensor([0,1])) )
+            noise = tntt.randn([2]*ncores,[1]+[r]*(ncores-1)+[1],var=var)
+            noise = noise*delta
+            mpsm += w**(ncores-1) * level
+            #mpsm = (mpsm).round(eps)
+        else:
+            delta = tntt.kron(tntt.ones([2]*(i-1)),tntt.TT(tn.tensor([0,1])) )
+            noise = tntt.randn([2]*i,[1]+[r]*(i-1)+[1],var=var)
+            noise = noise*delta
+            level = tntt.kron(noise,phi1) + tntt.kron( (sm@noise).round(), phi2)
+            mpsm += w**(i-1) * level
+    mpsm = (mpsm).round(eps)
+
+    return mpsm
