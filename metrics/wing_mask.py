@@ -105,7 +105,7 @@ for p in range(p_coarse+1, pmax+1):
         Y = ten.rand(n, r)
         info_fine,cache = {}, {}
         Y = ten.cross(ften, Y, m, e, nswp, dr_min=dr_min, dr_max=dr_max, cache=cache,m_cache_scale=5,log=True,info=info_fine)
-        Yr = ten.truncate(Y, 1e-4) 
+        Yr = ten.truncate(Y, 1e-3) 
 
         ''' 
         #validate over 1e5 points
