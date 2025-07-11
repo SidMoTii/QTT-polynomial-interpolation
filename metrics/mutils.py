@@ -36,12 +36,12 @@ def correlated_gaussian_pdf(x, y, mean=None, corr=None):
     """
     Compute the PDF value of a 2D Gaussian at point (x, y) with given mean and correlation matrix.
     Args:
-        x (float or torch.Tensor): x-coordinate(s)
-        y (float or torch.Tensor): y-coordinate(s)
+        x (float or tn.Tensor): x-coordinate(s)
+        y (float or tn.Tensor): y-coordinate(s)
         mean (list or None): Mean of the distribution. If None, uses [0, 0].
-        corr (2x2 torch.Tensor or None): Correlation matrix. If None, uses identity.
+        corr (2x2 tn.Tensor or None): Correlation matrix. If None, uses identity.
     Returns:
-        torch.Tensor: PDF value(s) at (x, y)
+        tn.Tensor: PDF value(s) at (x, y)
     """
     if mean is None:
         mean = tn.zeros(2, dtype=tn.float64)
@@ -117,3 +117,51 @@ def correlated_gaussian_pdf_ten(X, mean=None, corr=None):
     exponent = -0.5 * np.sum(diff @ corr_inv * diff, axis=1)
     norm = 1.0 / (2 * np.pi * np.sqrt(det_corr))
     return norm * np.exp(exponent)
+
+
+
+def symmetric_wing(x: tn.Tensor,
+                   y: tn.Tensor,
+                   rad: float,
+                   new='swing',alpha=100):
+    """
+    x, y: same‐shaped tensors of coordinates (e.g. from meshgrid)
+    rad: radius factor (you had t = 10*rad)
+    new: `"wing1"` or other, controls the k‐shift
+    returns: bump values = exp(-1e4 * (v^2 - (y - k*(arg-0.5))^2 + |...|))
+    """
+    # thickness parameter
+    t = 10.0 * rad
+    # horizontal shift
+    x0 = -.5
+    y0 = 0
+
+    y = y-y0
+
+    # small camber if "wing1"
+    k = 0.4 if new == "wing1" else 0.0
+
+    # polynomial coefficients
+    csq = 0.2969 * t
+    c1, c2, c3, c4 = (-0.1260*t, -0.3516*t, 0.2843*t, -0.1015*t)
+
+    # compute "arg" with the domain test |x - 0.5 - x0| <= 0.5
+    cond = (tn.abs(x - 0.5 - x0) <= 0.5)
+    outside = tn.sign(x0 - x) + tn.sign(x - x0 - 1)
+    arg = tn.where(cond, x - x0, outside)
+
+    # ensure non-negative for sqrt
+    arg_s = tn.clamp(arg, min=0.0)
+
+    # profile v(arg)
+    v = (c1*arg + c2*arg**2 + c3*arg**3 + c4*arg**4
+         + csq * tn.sqrt(arg_s))
+
+    # raw signed distance squared difference
+    raw = v**2 - (y - k*(arg - 0.5))**2
+
+    # keep only positive part (so values ≥ 0)
+    pos = raw + tn.abs(raw)
+
+    # final bump
+    return tn.exp(-alpha * pos)

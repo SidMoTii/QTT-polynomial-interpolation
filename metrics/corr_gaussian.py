@@ -49,7 +49,7 @@ rmax, ernk = [], []
 
 reps = 10
 pmax=17
-for p in range(p_coarse+1, pmax+1):
+for p in range(16, pmax+1):
     print(p,pmax,flush=True)
     pfinal = p
     #get statistics for cross

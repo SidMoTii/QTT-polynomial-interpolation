@@ -374,7 +374,7 @@ def erank(ranks, dimensions):
     d = len(dimensions)  # Number of dimensions
 
     # Compute the total number of parameters (S)
-    S = sum(ranks[i] * dimensions[i] * ranks[i+1] for i in range(0, d - 1))
+    S = sum(ranks[i] * dimensions[i] * ranks[i+1] for i in range(0, d ))
 
     # Define the function for fsolve
     def equation(re):
@@ -639,8 +639,11 @@ def z_order_to_normal_torch(z_order_tensor, rows, cols):
     return normal_flat.reshape(rows, cols)
 
 
-@njit(parallel=True, fastmath=True)
+@njit(fastmath=True)
 def part1by1(n):
+    """
+    Spread bits of integer n so that its bits occupy even positions.
+    """
     n = (n | (n << 8)) & 0x00FF00FF
     n = (n | (n << 4)) & 0x0F0F0F0F
     n = (n | (n << 2)) & 0x33333333
@@ -649,6 +652,9 @@ def part1by1(n):
 
 @njit(parallel=True, fastmath=True)
 def z_order_to_normal(z_order_array, rows, cols):
+    """
+    Convert a 1D Morton‐ordered array into a 2D row‐major array.
+    """
     normal_array = np.empty((rows, cols), dtype=z_order_array.dtype)
     for r in prange(rows):
         for c in range(cols):
@@ -658,8 +664,6 @@ def z_order_to_normal(z_order_array, rows, cols):
             else:
                 normal_array[r, c] = 0
     return normal_array
-
-
 
 
 def plot_volume_voxels_binary(volume, threshold=0.5):

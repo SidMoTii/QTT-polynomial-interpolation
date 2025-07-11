@@ -18,10 +18,15 @@ from metrics.mutils import*
 
 # %% Configuration
 
-alpha = 100
-R = 0.125
-ftn = lambda X,Y : circles(X,Y,alpha=alpha,r=R)
-ften = lambda X: circle_ten(X,alpha=alpha,r=R)
+alpha = 1e2
+R = 0.2
+l = 1
+
+ftn = lambda X,Y : symmetric_wing(X,Y,rad=R,new='wing1',alpha=alpha)
+def ften(I):
+    X = ind_to_r_ten(I,a=-l,b=l,d=2,pdp=1)
+    x,y = X[:,1], X[:,0]
+    return symmetric_wing( tn.tensor(x,dtype=tn.float64), tn.tensor(y,dtype=tn.float64),rad=R,new='wing1',alpha=alpha )
 # %% Coarse grid 
 
 p_coarse = 10
@@ -31,7 +36,7 @@ pmax=17
 # %% Data preparation
 # prepare output directory & JSONL file
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-jsonl_path = os.path.join(BASE_DIR, 'metrics', 'data', 'mask_results.jsonl')
+jsonl_path = os.path.join(BASE_DIR, 'metrics', 'data', 'wing_results_lr.jsonl')
 
 
 # %% Gather Data for Cross
@@ -45,7 +50,7 @@ rmax, ernk = [], []
 
 
 reps = 10
-for p in range(16, pmax+1):
+for p in range(p_coarse+1, pmax+1):
     print(p,pmax, flush=True)
     pfinal = p
     #get statistics for cross
@@ -53,8 +58,8 @@ for p in range(16, pmax+1):
 
         # SVD coarse
         t = time()
-        x = tn.linspace(0, 1, num_points + 1, dtype=tn.float64)[:-1]
-        y = tn.linspace(0, 1, num_points + 1, dtype=tn.float64)[:-1]
+        x = tn.linspace(-l, l, num_points + 1, dtype=tn.float64)[:-1]
+        y = tn.linspace(-l, l, num_points + 1, dtype=tn.float64)[:-1]
         X, Y = tn.meshgrid(x, y, indexing='ij')
 
         mask_grid = ftn(X, Y)
@@ -64,27 +69,26 @@ for p in range(16, pmax+1):
 
         ncoarse = [ 2,2]*p_coarse
         m         = None  # Number of calls to target function
-        e         =  1e-7   # Desired accuracy
-        nswp      = 3   # Sweep number
-        r         = 30      # TT-rank of the initial tensor
+        e         =  1e-6   # Desired accuracy
+        nswp      = 4   # Sweep number
+        r         = 20      # TT-rank of the initial tensor
         dr_min    = 2      # Cross parameter (minimum number of added rows)
         dr_max    = 5      # Cross parameter (maximum number of added rows)
 
-        f = lambda I: ften(ind_to_r_ten(I,a=0,b=1,d=2,pdp=1))
         
         Yc = ten.rand(ncoarse, r)
         cache,info_coarse = {}, {}
-        mask_ttc = ten.cross(f, Yc, m, e, nswp, dr_min=dr_min, dr_max=dr_max,log=True,cache=cache,m_cache_scale=5,info=info_coarse)
+        mask_ttc = ten.cross(ften, Yc, m, e, nswp, dr_min=dr_min, dr_max=dr_max,log=True,cache=cache,m_cache_scale=10,info=info_coarse)
         mask_ttc = ten.truncate(mask_ttc,1e-14)
 
         # do the interpolation
         t = time()
-        mask_svd_i = qtt_skcubic2d_p(mask_svd, pfinal, eps=1e-10, order=1)
+        mask_svd_i = qtt_skcubic2d_p(mask_svd, pfinal, eps=1e-10, order=1).round(1e-3)
         t_svd_i = time() - t
         mask_svd_i = [c.numpy() for c in mask_svd_i.cores]
 
         t = time()
-        mask_ttc_i = qtt_skcubic2d_p( tntt.TT([tn.tensor(c,dtype=tn.float64) for c in mask_ttc]) ,pfinal, eps=1e-10, order=1)
+        mask_ttc_i = qtt_skcubic2d_p( tntt.TT([tn.tensor(c,dtype=tn.float64) for c in mask_ttc]) ,pfinal, eps=1e-10, order=1).round(1e-3)
         t_ttc_i = time() - t
         mask_ttc_i = [c.numpy() for c in mask_ttc_i.cores]
 
@@ -92,16 +96,16 @@ for p in range(16, pmax+1):
 
         n = [ 2,2]*pfinal   # Shape of the tensor
         m         = None  # Number of calls to target function
-        e         =  1e-7   # Desired accuracy
-        nswp      = 3   # Sweep number
-        r         = 30 + (p-p_coarse)*5      # TT-rank of the initial tensor
+        e         =  1e-6   # Desired accuracy
+        nswp      = 4   # Sweep number
+        r         = 20 + (p-p_coarse)*2      # TT-rank of the initial tensor
         dr_min    = 2      # Cross parameter (minimum number of added rows)
         dr_max    = 5      # Cross parameter (maximum number of added rows)
 
         Y = ten.rand(n, r)
         info_fine,cache = {}, {}
-        Y = ten.cross(f, Y, m, e, nswp, dr_min=dr_min, dr_max=dr_max, cache=cache,m_cache_scale=5,log=True,info=info_fine)
-        Yr = ten.truncate(Y, 1e-14) 
+        Y = ten.cross(ften, Y, m, e, nswp, dr_min=dr_min, dr_max=dr_max, cache=cache,m_cache_scale=5,log=True,info=info_fine)
+        Yr = ten.truncate(Y, 1e-4) 
 
         ''' 
         #validate over 1e5 points
@@ -123,8 +127,8 @@ for p in range(16, pmax+1):
         '''
         print('doing errors...',flush=True)
         N = 2**pfinal
-        x = tn.linspace(0, 1, N + 1, dtype=tn.float64)[:-1]
-        y = tn.linspace(0, 1, N + 1, dtype=tn.float64)[:-1]
+        x = tn.linspace(-l, l, N + 1, dtype=tn.float64)[:-1]
+        y = tn.linspace(-l, l, N + 1, dtype=tn.float64)[:-1]
         X, Y = tn.meshgrid(x, y, indexing='ij')
         mask_grid = ftn(X, Y)
         mask_full = zM(mask_grid,pfinal)
@@ -184,6 +188,8 @@ for p in range(16, pmax+1):
                 os.fsync(f.fileno())
 
         print(f"  rep {i+1}/{reps} saved", end='\r', flush=True)
+        print('error',error[-3::],flush=True)
+        print('rmax',rmax[-3::],flush=True)
 
 
 
@@ -200,5 +206,5 @@ df = pd.DataFrame({
 
 # %% Save results
 
-df.to_csv('./metrics/data/mask_results.csv', index=False)
+df.to_csv('./metrics/data/wing_results.csv', index=False)
 
