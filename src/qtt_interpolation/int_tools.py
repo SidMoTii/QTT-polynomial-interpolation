@@ -22,7 +22,7 @@ def qtt_skcubic2d(mps, fscale,f_boundary, eps = 1e-15, order = 1, p_derivative =
     nc = fscale - ni 
 
     id0 = I_qtt(ni)
-    ones = tntt.ones([2]*ni)
+    ones = tntt.ones([2,2]*ni)
     onesf = tntt.ones([2]*nc)
 
     id0 = I_qtt(ni)
@@ -144,7 +144,7 @@ def qtt_skcubic2d_p(mps, fscale, eps = 1e-15, order = 1, p_derivative = [0,0]):
     nc = fscale - ni 
 
     id0 = I_qtt(ni)
-    ones = tntt.ones([2]*ni)
+    ones = tntt.ones([2,2]*ni)
     onesf = tntt.ones([2]*nc)
 
     if order == 1:
@@ -202,7 +202,7 @@ def qtt_skcubic3d_p(mps, fscale, eps = 1e-15, order = 1, p_derivative = [0,0,0])
     nc = fscale - ni 
 
     id0 = I_qtt(ni)
-    ones = tntt.ones([2]*ni)
+    ones = tntt.ones([2,2,2]*ni)
     onesf = tntt.ones([2]*nc)
 
     if order == 1:
@@ -270,7 +270,7 @@ def skcubic_i(mps, fscale, f_boundary, eps = 1e-15,epsilon = 0.1 , order = 1, bo
     sm10 = R_qtt( 2**ni -1, ni)
     sm20 = R_qtt( 2**ni -2, ni)
     smm10 = L_qtt( 1, ni)
-    ones = tntt.ones([1]*ni)
+    ones = tntt.ones([8]*ni)
     onesf = tntt.ones([2]*nc)
     delta = dmps(2**ni -1,ni)
     deltae = tntt.kron(delta,onesf)

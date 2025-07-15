@@ -122,7 +122,7 @@ def mid_point_1d(ncores,octaves=None, nrank=10,var=1,eps=1e-10, H = 1):
             delta = tntt.kron(tntt.ones([2]*(ncores-1)),tntt.TT(tn.tensor([0,1])) )
             noise = tntt.randn([2]*ncores,[1]+[r]*(ncores-1)+[1],var=var)
             noise = noise*delta
-            mpsm += w**(ncores-1) * level
+            mpsm += w**(ncores-1) * noise
             #mpsm = (mpsm).round(eps)
         else:
             delta = tntt.kron(tntt.ones([2]*(i-1)),tntt.TT(tn.tensor([0,1])) )
