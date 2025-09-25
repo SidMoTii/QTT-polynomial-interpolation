@@ -2,6 +2,8 @@ import torch as tn
 import numpy as np
 
 
+### 2D auxiliary functions
+
 def ind_to_r(I, a=0, b=1, d=1, pdp=1):
     """
     This function maps a multi-digit index to a real number in [a, b)^d.
@@ -165,3 +167,293 @@ def symmetric_wing(x: tn.Tensor,
 
     # final bump
     return tn.exp(-alpha * pos)
+
+
+
+
+#### 3D wing functions
+
+
+# --- Wing parameterization (yours) ---
+b, c_r, c_t = 2.0, 1.0, 0.5
+Lambda_LE = np.deg2rad(15)
+phi       = 0.0
+t_chord   = 0.12
+ALPHA = 500.0
+
+def chord(eta):
+    return c_r*(1 - np.abs(eta))/2 + c_t*(1 + np.abs(eta))/2
+
+def z_planform(eta):
+    return 0.5 * b * eta * np.tan(phi)
+
+def y_t(xi):
+    return t_chord*(0.2969 * np.sqrt(xi)
+             - 0.1260 * xi
+             - 0.3516 * xi**2
+             + 0.2843 * xi**3
+             - 0.1015 * xi**4)
+
+# --- One-time normalization (thickness = alpha / real_thick) ---
+def precompute_thickness(alpha=ALPHA, samples=1000):
+    xi_test    = np.linspace(0.0, 1.0, samples, endpoint=True)
+    max_y_t    = float(np.max(y_t(xi_test)))
+    c_root     = float(chord(0.0))
+    real_thick = 2.0 * c_root * max_y_t
+    if real_thick <= 0.0:
+        raise ValueError("real_thick must be positive.")
+    return np.float64(alpha / real_thick)
+
+# use this by default; pass your own if you like
+THICKNESS = precompute_thickness(alpha=ALPHA, samples=1000)
+
+# --- Shared NumPy core: builds NON-inverted mask (0 inside → 1 outside) ---
+def _wing_mask_core_np(ETA, XI, ZG, thickness):
+    ETA = np.asarray(ETA, dtype=np.float64)
+    XI  = np.asarray(XI,  dtype=np.float64)
+    ZG  = np.asarray(ZG,  dtype=np.float64)
+    if ETA.shape != XI.shape or ETA.shape != ZG.shape:
+        raise ValueError("ETA, XI, ZG must have identical shapes.")
+
+    mask = np.ones_like(ZG, dtype=np.float64)
+
+    # full 3D core/band (equiv. to your 2D-slice + broadcast)
+    in_core = (ETA >= -1.0) & (ETA <= 1.0) & (XI >= -1.0) & (XI <= 1.0)
+    in_band = (XI  >= -0.5) & (XI  <= 0.5)
+    use = in_core & in_band
+    if not np.any(use):
+        return mask
+
+    # local surfaces only where used
+    eta_u = ETA[use]
+    xi_u  = XI[use]
+    z_u   = ZG[use]
+
+    xi_par = xi_u + 0.5                  # [-0.5,0.5] → [0,1]
+    C_u    = chord(eta_u)
+    Zt_u   = C_u * y_t(xi_par)
+    zc_u   = z_planform(eta_u)
+    zup_u  = zc_u + Zt_u
+    zlow_u = zc_u - Zt_u
+
+    # inside
+    inside_u = (z_u >= zlow_u) & (z_u <= zup_u)
+    mask[use] = np.where(inside_u, 0.0, mask[use])
+
+    # above
+    above_u = z_u > zup_u
+    if np.any(above_u):
+        dz = z_u[above_u] - zup_u[above_u]
+        mask[use][above_u] = 1.0 - np.exp(-thickness * dz)
+
+    # below
+    below_u = z_u < zlow_u
+    if np.any(below_u):
+        dz = zlow_u[below_u] - z_u[below_u]
+        mask[use][below_u] = 1.0 - np.exp(-thickness * dz)
+
+    return mask  # 0 inside, →1 outside
+
+# --- Your public APIs (same names), returning 1 - mask ---
+def wing_mask(ETA, XI, ZG, alpha=ALPHA, thickness=THICKNESS):
+    """
+    Grid mask (torch float64). Returns 1 inside, 0 outside.
+    """
+    # if caller gave a different alpha but no thickness override, recompute
+    if thickness is None:
+        thickness = precompute_thickness(alpha=alpha, samples=1000)
+    base = _wing_mask_core_np(ETA, XI, ZG, thickness)
+    return tn.tensor(1.0 - base, dtype=tn.float64)
+
+def wing_mask_pc(x, y, z, alpha=ALPHA, thickness=THICKNESS):
+    """
+    Pointwise mask (NumPy 1D). Returns 1 inside, 0 outside.
+    """
+    x = np.asarray(x, dtype=np.float64).ravel()
+    y = np.asarray(y, dtype=np.float64).ravel()
+    z = np.asarray(z, dtype=np.float64).ravel()
+    if not (x.size == y.size == z.size):
+        raise ValueError("x, y, z must have the same length.")
+    # match alpha if caller overrides it
+    if thickness is None:
+        thickness = precompute_thickness(alpha=ALPHA, samples=1000)
+    base = _wing_mask_core_np(x, y, z, thickness)
+    return 1.0 - base
+
+'''
+# --- Wing parameterization ---
+b, c_r, c_t = 2.0, 1.0, 0.5
+Lambda_LE = np.deg2rad(15)
+phi       = 0.0
+t_chord        = 0.12
+
+def chord(eta):
+    return c_r*(1 - np.abs(eta))/2 + c_t*(1 + np.abs(eta))/2
+
+def z_planform(eta):
+    return 0.5 * b * eta * np.tan(phi)
+
+def y_t(xi):
+    return t_chord*(0.2969 * np.sqrt(xi)
+             - 0.1260 * xi
+             - 0.3516 * xi**2
+             + 0.2843 * xi**3
+             - 0.1015 * xi**4)
+
+
+
+def wing_mask(ETA, XI, ZG, alpha=1000.0):
+    """
+    Build the 3D wing mask on given grids (exactly mirrors the reference code).
+
+    ETA, XI, ZG : same-shaped ndarrays from meshgrid(indexing='ij'), i.e.
+                  ETA = eta-grid, XI = xi-grid, ZG = z-grid
+    alpha       : falloff factor (use 1000.0 to match reference)
+
+    Returns
+    -------
+    mask : torch tensor (float64) with same shape as ZG
+           =0 inside wing, transitions to 1 outside
+    """
+    # --- chordwise band in [-0.5, 0.5] over xi (XI) ---
+    mask_band = (XI[:, :, 0] >= -0.5) & (XI[:, :, 0] <= 0.5)
+
+    # --- 2D upper/lower surfaces (z at the band) ---
+    Zup2d  = np.zeros_like(ETA[:, :, 0], dtype=np.float64)
+    Zlow2d = np.zeros_like(ETA[:, :, 0], dtype=np.float64)
+
+    xi_param = XI[:, :, 0][mask_band] + 0.5   # map [-0.5,0.5] → [0,1]
+    eta_m    = ETA[:, :, 0][mask_band]
+
+    # chord(), y_t(), z_planform() are assumed globally defined
+    C_m = chord(eta_m)
+    Zt  = C_m * y_t(xi_param)
+
+    Zup2d[mask_band]  = z_planform(eta_m) + Zt
+    Zlow2d[mask_band] = z_planform(eta_m) - Zt
+
+    # --- Broadcast to 3D (use the same form as your script) ---
+    Zup3d  = Zup2d[:, :, None]  * np.ones_like(ZG, dtype=np.float64)
+    Zlow3d = Zlow2d[:, :, None] * np.ones_like(ZG, dtype=np.float64)
+
+    # --- Thickness scale (exactly as in your script) ---
+    xi_test    = np.linspace(0.0, 1.0, 1000)
+    max_y_t    = np.max(y_t(xi_test))
+    c_root     = chord(0.0)
+    real_thick = 2.0 * c_root * max_y_t
+
+    # --- Initialize mask to 1 everywhere (float64) ---
+    mask = np.ones_like(ZG, dtype=np.float64)
+
+    # --- Core region in eta/xi (2D, then lift to 3D) ---
+    mask_eta  = (ETA[:, :, 0] >= -1.0) & (ETA[:, :, 0] <= 1.0)
+    mask_xi   = (XI[:,  :, 0] >= -1.0) & (XI[:,  :, 0] <= 1.0)
+    mask_core = mask_eta & mask_xi
+
+    core3d = mask_core[:, :, None]
+    band3d = mask_band[:, :, None]
+
+    # 1) Inside wing → mask = 0
+    inside = core3d & band3d & (ZG >= Zlow3d) & (ZG <= Zup3d)
+    mask[inside] = 0.0
+
+    # 2) Above upper surface → exponential falloff
+    above = core3d & band3d & (ZG > Zup3d)
+
+    zd_above = ZG - Zup3d
+    mask[above] = 1.0 - np.exp(-(alpha/real_thick) * zd_above[above])
+
+    # 3) Below lower surface → exponential falloff
+    below = core3d & band3d & (ZG < Zlow3d)
+
+    zd_below = Zlow3d - ZG
+    mask[below] = 1.0 - np.exp(-(alpha/real_thick) * zd_below[below])
+
+    # torch output to match your downstream code
+    return 1-tn.tensor(mask, dtype=tn.float64)
+
+def wing_mask_pc(x, y, z, alpha=1000.0):
+    """
+    Pointwise wing mask.
+
+    x, y, z : 1D arrays/lists of the same length (eta, xi, z per point)
+    alpha   : sharpness of exponential falloff
+
+    Returns
+    -------
+    mask : 1D torch tensor with values in [0,1]
+           0 inside the wing; transitions to 1 outside.
+    """
+    x = np.asarray(x, dtype=np.float64).reshape(-1)
+    y = np.asarray(y, dtype=np.float64).reshape(-1)
+    z = np.asarray(z, dtype=np.float64).reshape(-1)
+    assert x.shape == y.shape == z.shape, "x, y, z must have the same shape"
+
+    n = x.size
+    mask = np.ones(n, dtype=np.float64)
+
+    # core region in eta/xi and chordwise band
+    in_core = (x >= -1.0) & (x <= 1.0) & (y >= -1.0) & (y <= 1.0)
+    in_band = (y >= -0.5) & (y <= 0.5)
+    use     = in_core & in_band
+    if not np.any(use):
+        return tn.tensor(mask, dtype=tn.float64)  # all ones
+
+    # thickness normalization
+    xi_test    = np.linspace(0.0, 1.0, 1000)
+    real_thick = 2.0 * float(chord(0.0)) * float(np.max(y_t(xi_test)))
+    if real_thick <= 0.0:
+        return tn.tensor(mask, dtype=tn.float64)
+
+    # compute local upper/lower surfaces only for selected points
+    eta_u   = x[use]
+    xi_u    = y[use]
+    xi_par  = xi_u + 0.5                  # map [-0.5,0.5] → [0,1]
+    C_u     = chord(eta_u)
+    Zt_u    = C_u * y_t(xi_par)
+    zc_u    = z_planform(eta_u)
+    zup_u   = zc_u + Zt_u
+    zlow_u  = zc_u - Zt_u
+    z_u     = z[use]
+
+    # inside
+    inside_u = (z_u >= zlow_u) & (z_u <= zup_u)
+    mask[use] = np.where(inside_u, 0.0, mask[use])
+
+    # above
+    above_u = z_u > zup_u
+    if np.any(above_u):
+        dz = z_u[above_u] - zup_u[above_u]
+        mask[use][above_u] = 1.0 - np.exp(-(alpha/real_thick) * dz)
+
+    # below
+    below_u = z_u < zlow_u
+    if np.any(below_u):
+        dz = zlow_u[below_u] - z_u[below_u]
+        mask[use][below_u] = 1.0 - np.exp(-(alpha/real_thick) * dz)
+
+    return 1-mask
+'''
+
+def ind_to_r_g(I, a, b, d=3, pdp=1, dtype=np.float64):
+    """
+    This function maps a multi-digit index to a real number in [a, b)^d.
+    Each entry in I[k] is an integer in 0,...,2**pdp-1 and is expanded to its binary representation.
+    The resulting binary digits are concatenated to form a long vector of 0's and 1's for each sample.
+    Returns a numpy array of shape (num_samples, d).
+    """
+    I = np.asarray(I)
+    num_samples = I.shape[0]
+    l = I.shape[1]*pdp  # total number of binary digits per sample
+    # Convert each entry to binary and concatenate
+    I_bin = ((I[..., None] >> np.arange(pdp-1, -1, -1)) & 1).reshape(num_samples, -1)
+    powers = np.array([2**(-i) for i in range(1, l//d+1)])
+    result = np.empty((num_samples, d))
+    for j in range(d):
+        idx = np.arange(j, l, d)
+        group = I_bin[:, idx]
+        wI = group * powers
+        x = (b[j] - a[j]) * wI.sum(axis=1) + a[j]
+        result[:, j] = x
+
+    return result
