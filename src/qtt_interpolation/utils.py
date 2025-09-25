@@ -508,6 +508,66 @@ def izM(M_z, n):
     M_orig = M_orig_flat.reshape(N, N)
     return M_orig
 
+def compute_morton3_indices(n: int) -> tn.Tensor:
+    """
+    Build a (2**n,2**n,2**n) tensor of 3D Morton codes by bit‑interleaving.
+    morton[i,j,k] = interleave_bits(i,j,k).
+    """
+    N = 2**n
+    idx = tn.arange(N, dtype=tn.long)
+    i, j, k = tn.meshgrid(idx, idx, idx, indexing='ij')    # each is shape (N,N,N)
+    morton = tn.zeros_like(i)
+
+    for bit in range(n):
+        morton |= ((i >> bit) & 1) << (3*bit)
+        morton |= ((j >> bit) & 1) << (3*bit + 1)
+        morton |= ((k >> bit) & 1) << (3*bit + 2)
+
+    return morton
+
+
+def zM3(M: tn.Tensor, n: int) -> tn.Tensor:
+    """
+    Rearrange a (2**n,2**n,2**n) tensor M into Z‑order (Morton) curve.
+    
+    After this, flattening M_z in row‑major (i.e. M_z.view(-1)) will
+    traverse M in 3D Morton order.
+    """
+    N = 2**n
+    # 1) compute 3D Morton codes for each (i,j,k)
+    morton = compute_morton3_indices(n)    # shape (N,N,N), values in [0, N^3-1]
+
+    # 2) invert row-major flatten:
+    #    flat_idx = new_i*N*N + new_j*N + new_k  =>  morton
+    new_i = morton // (N*N)
+    rem   = morton %  (N*N)
+    new_j = rem   // N
+    new_k = rem   %  N
+
+    # 3) scatter
+    M_z = tn.empty_like(M)
+    idx = tn.arange(N, dtype=tn.long)
+    old_i, old_j, old_k = tn.meshgrid(idx, idx, idx, indexing='ij')
+
+    M_z[new_i, new_j, new_k] = M[old_i, old_j, old_k]
+    return M_z
+
+
+def z_order_to_normal_nopara(z_order, normal, dim0, dim1, dim2):
+    n = z_order.size
+    for i in range(n):
+        code = i
+        x = y = z = bit = 0
+        while code:
+            z |= (code & 1) << bit;  code >>= 1
+            y |= (code & 1) << bit;  code >>= 1
+            x |= (code & 1) << bit;  code >>= 1
+            bit += 1
+
+        if x < dim0 and y < dim1 and z < dim2:
+            normal[x, y, z] = z_order[i]
+    return normal
+
 def zkron(a,b):
 
     coresA = a.cores
@@ -968,3 +1028,156 @@ def generate_divergence_free_kolmogorov_2d(
     u = np.fft.ifft2(u_hat).real
     v = np.fft.ifft2(v_hat).real
     return u, v
+
+
+def rcf(cores):
+    R = [1] + [c.shape[2] for c in cores[:-1]] + [1]
+    return tntt._decomposition.rl_orthogonal( cores, R, False )[0]
+
+def full_i(cores,indx):
+    tfull = cores[0][0, :, :]
+    for i in range(1, indx):
+        tfull = tn.einsum('...i,ijk->...jk', tfull, cores[i])
+    return tfull
+
+def ensure_torch_rng(rng=None, device=None):
+    if rng is None:
+        if device is None:
+            device = "cuda" if tn.cuda.is_available() else "cpu"
+        rng = tn.Generator(device=device)
+        rng.seed()  # nondeterministic, like np.random.default_rng()
+    return rng
+
+def marginal_probs(mps, Tprev, site):
+    tensor = mps[site]
+    ampls = tn.einsum('ni,iaj->naj', Tprev, tensor)
+    probs = (ampls**2).sum(2)
+    return probs
+
+def sample_r(probs, rng, sentinel=-1):
+    p = probs.clamp_min(0)
+    sums = p.sum(dim=1); nz = sums > 0
+    out = tn.full((p.size(0),), sentinel, device="cpu")
+    if nz.any():
+        if rng is None:
+            rng = tn.Generator(device="cpu").seed()
+        out[nz] = tn.multinomial(p[nz], 1, replacement=True, generator=rng).squeeze(1)
+    return out
+
+def tt_mc_sample(tt_cores, Nsamples, rng = None, return_joint=False):
+
+    if rng == None:
+        rng = ensure_torch_rng()
+
+    mps = rcf(tt_cores)
+
+    L = len(mps)
+    d = mps[0].shape[1]
+
+    #first site
+    mps0 = full_i(mps,1)
+    p0 = (mps0**2).sum(1)
+    p0 = tn.clamp(p0, min=0)
+    p0 /= p0.sum()
+    first_samples = tn.multinomial(p0, num_samples=Nsamples,replacement=True, generator=rng)
+
+    Tprev = mps0[first_samples]        # (Nsamples, D1)
+    prob_prev = (Tprev**2).sum(1)        # current accumulated probability
+    bitstrings = first_samples.reshape(1, Nsamples)
+
+    # Middle sites
+    for site in range(1, L - 1):
+        probs_cur = marginal_probs(mps, Tprev, site)        # (Nsamples, d)
+        probs_cond = probs_cur / prob_prev[:, None]
+        samples_site = sample_r(probs_cond, rng)
+        # Contract selected tensors
+        Tsite = mps[site][:,samples_site,:]                     # (Nsamples, Dl, Dr)
+        Tprev = tn.einsum('ni,inj->nj', Tprev, Tsite)       # (Nsamples, Dr)
+        prob_prev = (Tprev**2).sum(1)
+        bitstrings = tn.concatenate((bitstrings, samples_site.reshape(1, Nsamples)), axis=0)
+
+    # Last site
+    last_tensor = mps[-1]           # shape (d, Dl)
+    ampls_last_all = tn.einsum('ni,iqj->nq', Tprev, last_tensor)  # (Nsamples, d)
+    probs_last_all = ampls_last_all**2
+    probs_cond_last = probs_last_all / prob_prev[:, None]
+    last_samples = sample_r(probs_cond_last, rng)
+    bitstrings = tn.concatenate((bitstrings, last_samples.reshape(1, Nsamples)), axis=0)
+
+    if return_joint:
+        # amplitude for chosen last outcome
+        ampl_final = tn.einsum('ni,ni->n', Tprev, last_tensor[last_samples])
+        joint_probs = ampl_final**2
+        return bitstrings, joint_probs
+
+    return bitstrings
+
+def tt_mc_sample_bo(tt_cores, m , Nsamples, rng = None, return_joint=False):
+
+    if rng == None:
+        rng = ensure_torch_rng()
+
+    mps = rcf(tt_cores)
+    L = len(mps)
+    d = mps[0].shape[1]
+
+    #first m sites
+    mps0 = full_i(mps,m).reshape(d**m,-1)
+    p0 = (mps0**2).sum(1)
+    p0 = tn.clamp(p0, min=0)
+    p0 /= p0.sum()
+    first_samples = tn.multinomial(p0, num_samples=Nsamples,replacement=True, generator=rng)
+    
+    Tprev = mps0[first_samples]        # (Nsamples, D1)
+    prob_prev = (Tprev**2).sum(1)        # current accumulated probability
+    bitstrings = first_samples.reshape(1, Nsamples)
+
+    # Middle sites
+    for site in range(m, L - 1):
+        probs_cur = marginal_probs(mps, Tprev, site)        # (Nsamples, d)
+        probs_cond = probs_cur / prob_prev[:, None]
+        samples_site = sample_r(probs_cond, rng)
+        # Contract selected tensors
+        Tsite = mps[site][:,samples_site,:]                     # (Nsamples, Dl, Dr)
+        Tprev = tn.einsum('ni,inj->nj', Tprev, Tsite)       # (Nsamples, Dr)
+        prob_prev = (Tprev**2).sum(1)
+        bitstrings = tn.concatenate((bitstrings, samples_site.reshape(1, Nsamples)), axis=0)
+    
+        # Last site
+    last_tensor = mps[-1]           # shape (d, Dl)
+    ampls_last_all = tn.einsum('ni,iqj->nq', Tprev, last_tensor)  # (Nsamples, d)
+    probs_last_all = ampls_last_all**2
+    probs_cond_last = probs_last_all / prob_prev[:, None]
+    last_samples = sample_r(probs_cond_last, rng)
+    bitstrings = tn.concatenate((bitstrings, last_samples.reshape(1, Nsamples)), axis=0)
+
+    if return_joint:
+        # amplitude for chosen last outcome
+        ampl_final = tn.einsum('ni,ni->n', Tprev, last_tensor[last_samples])
+        joint_probs = ampl_final**2
+        return bitstrings, joint_probs
+
+    return bitstrings
+
+def bin_bits(A: tn.Tensor, m: int, msb_first: bool = True,
+                                as_bool: bool = False) -> tn.Tensor:
+    """
+    A: (N, d) with A[:,0] in [0, 2**m - 1]
+    Returns: (N, m + d - 1), first m columns are the binary bits of A[:,0].
+    """
+    N, d = A.shape
+    x = A[:, 0].to(tn.long)                 # integers for bit ops
+
+    shifts = (tn.arange(m-1, -1, -1, device=A.device) if msb_first
+              else tn.arange(m, device=A.device))
+    bits = ((x.unsqueeze(1) >> shifts) & 1)
+
+    if as_bool:
+        bits = bits.bool()
+    else:
+        bits = bits.to(A.dtype)                # keep original dtype (e.g., float)
+
+    out = tn.empty((N, m + d - 1), dtype=bits.dtype, device=A.device)
+    out[:, :m] = bits
+    out[:, m:] = A[:, 1:].to(out.dtype)
+    return out
