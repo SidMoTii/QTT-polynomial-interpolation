@@ -2094,4 +2094,67 @@ def compute_flatness_p(u, max_sep, L):
     return seps, flats
 
 
+def qtt_I_1D(mps, fscale,f_boundary, eps = 1e-15, order = 1, p_derivative = 0,boundary = 'lineare'):
 
+    
+    ni = len(mps.N)
+    nc = fscale - ni 
+
+    sm10 = R_qtt( 2**ni -1, ni)
+    sm20 = R_qtt( 2**ni -2, ni)
+    smm10 = L_qtt( 1, ni)
+    delta = dmps(2**ni -1,ni)
+
+    if order == 1:
+        # Build Kernel interpolant
+        Mkc = tn.tensor([
+            [0, 2, 0, 0],
+            [-1, 0, 1, 0],
+            [2, -5, 4, -1],
+            [-1, 3, -3, 1]
+        ], dtype=tn.float64) /2
+
+        Mkct = Mkc.t()
+
+        Om10 = smm10 + 3*dmpo(0,0,ni) - 3*dmpo(0,1,ni) + dmpo(0,2,ni) 
+        O20 = sm20 - 3*dmpo(2**ni-1,2**ni-1,ni) + dmpo(2**ni-1,2**ni-2,ni)
+        delta2 = dmps(2**ni -2,ni) + 3*dmps(2**ni -1,ni)
+
+    elif order == 2:
+
+        Mkct = tn.tensor([
+            [1, -3, 3, -1],
+            [4, 0, -6, 3],
+            [1, 3, 3, -3],
+            [0,0, 0, 1]
+        ], dtype=tn.float64) /6
+
+        Om10 = smm10 + 3*dmpo(0,0,ni) - 3*dmpo(0,1,ni) + dmpo(0,2,ni) 
+        O20 = sm20 - 3*dmpo(2**ni-1,2**ni-1,ni) + dmpo(2**ni-1,2**ni-2,ni)
+        delta2 = dmps(2**ni -2,ni) + 3*dmps(2**ni -1,ni)
+
+    
+        if boundary == 'lineare':
+            Om10 = smm10 + 2*dmpo(0,0,ni) - dmpo(0,1,ni) 
+            O20 = sm20 - dmpo(2**ni-1,2**ni-1,ni) 
+            delta2 = dmps(2**ni -2,ni) + 2*dmps(2**ni -1,ni)
+        elif boundary == 'mirror':
+            Om10 = smm10 +  dmpo(0,1,ni) 
+            O20 = sm20 + dmpo(2**ni-1,2**ni-1,ni) 
+            delta2 = dmps(2**ni -2,ni) 
+        elif boundary == 'clamped':
+            Om10 = smm10 +  dmpo(0,0,ni) 
+            O20 = sm20 
+            delta2 = dmps(2**ni -2,ni) + dmps(2**ni -1,ni)
+    
+
+    corner = f_boundary*delta
+    corner2 = f_boundary*delta2
+
+    M = d_coeff_mat(Mkct, p_derivative) 
+    pols = [tntt.TT(qtt_polynomial_cores(M[i], nc)) for i in range(4)]
+
+    f_kcs = tntt.kron( ( Om10 @ mps) , pols[0] ) + tntt.kron( mps , pols[1] ) +  tntt.kron( sm10 @ mps + corner, pols[2]) +  tntt.kron( O20 @ mps + corner2 ,  pols[3])
+    f_kcs = f_kcs.round(eps)
+
+    return f_kcs
