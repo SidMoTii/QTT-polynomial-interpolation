@@ -16,7 +16,7 @@ import os
 # %% Data preparation
 # prepare output directory & JSONL file
 
-jsonl_path = BASE_DIR / "metrics" / "data" / "3d_wing_c10_test.jsonl"
+jsonl_path = BASE_DIR / "metrics" / "data" / "3d_wing_c10.jsonl"
 
 
 # %% Configuration
@@ -42,7 +42,7 @@ print('initial dim ',p_coarse)
 zlim     = 1/16
 num_points = 2**p_coarse
 pmax = 15
-reps = 1
+reps = 5
 mode = []
 scale  = []
 error = []
@@ -85,8 +85,8 @@ for p in range(p_coarse+1, pmax+1):
         ncoarse = [ 2,2,2]*p_coarse
         m         = None  # Number of calls to target function
         e         =  1e-5   # Desired accuracy
-        nswp      = 3   # Sweep number
-        r         = 100      # TT-rank of the initial tensor
+        nswp      = 4   # Sweep number
+        r         = 80      # TT-rank of the initial tensor
         dr_min    = 2      # Cross parameter (minimum number of added rows)
         dr_max    = 5      # Cross parameter (maximum number of added rows)
 
@@ -112,9 +112,9 @@ for p in range(p_coarse+1, pmax+1):
 
         n = [ 2,2,2]*p   # Shape of the tensor
         m         = None  # Number of calls to target function
-        e         =  1e-4   # Desired accuracy
-        nswp      = 4   # Sweep number
-        r         = 100 + (p-p_coarse)*20      # TT-rank of the initial tensor
+        e         =  1e-3   # Desired accuracy
+        nswp      = 3   # Sweep number
+        r         = 80 + (p-p_coarse)*15      # TT-rank of the initial tensor
         dr_min    = 2      # Cross parameter (minimum number of added rows)
         dr_max    = 5      # Cross parameter (maximum number of added rows)
 

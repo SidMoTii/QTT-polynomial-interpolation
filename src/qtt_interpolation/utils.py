@@ -1181,3 +1181,23 @@ def bin_bits(A: tn.Tensor, m: int, msb_first: bool = True,
     out[:, :m] = bits
     out[:, m:] = A[:, 1:].to(out.dtype)
     return out
+
+
+def tt_comp(tt):
+    if type(tt) == list :
+        d = 1
+        for i in range(len(tt)):
+            s = tt[i].shape
+            d *= int(s[1])
+        return sum([tn.numel(tn.from_numpy(c)) for c in tt])/d
+    else:
+        d = 1
+        for i in range(len(tt.N)):
+            d *= int(tt.N[i])
+        return sum([tn.numel(c) for c in tt.cores])/d
+    
+def get_R(root):
+    r = [1]
+    for i in range(len(root)):
+        r.append(root[i].shape[2])
+    return r

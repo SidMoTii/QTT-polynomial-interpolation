@@ -1,6 +1,7 @@
 import torch as tn
 import numpy as np
 
+tn.set_default_dtype(tn.float64)
 
 ### 2D auxiliary functions
 
@@ -179,7 +180,7 @@ b, c_r, c_t = 2.0, 1.0, 0.5
 Lambda_LE = np.deg2rad(15)
 phi       = 0.0
 t_chord   = 0.12
-ALPHA = 500.0
+ALPHA = 2**8
 
 def chord(eta):
     return c_r*(1 - np.abs(eta))/2 + c_t*(1 + np.abs(eta))/2
@@ -457,3 +458,164 @@ def ind_to_r_g(I, a, b, d=3, pdp=1, dtype=np.float64):
         result[:, j] = x
 
     return result
+
+def _gauss(x, c, s):
+    return tn.exp(-0.5*((x - c)/s)**2)
+
+def _chirp(x, f0, f1):
+    phase = 2*tn.pi*(f0*x + 0.5*(f1 - f0)*x**2)
+    return tn.sin(phase)
+
+def _val_deriv(fun, a, device, dtype):
+    a = tn.tensor(a, device=device, dtype=dtype, requires_grad=True)
+    y = fun(a)
+    (dy,) = tn.autograd.grad(y, a, create_graph=False)
+    return y.detach(), dy.detach()
+
+def highrank_function(x, noise_std=0.0, eps=1e-12,
+                      texture_gain=1.0,   # ↑ for more waviness
+                      squash_range=4.0,   # targets ~[-squash_range, +squash_range]
+                      squash_soft=2.0):   # smaller → stronger squash
+    """
+    Wavier C¹ function with same structure; constant+linear corrections keep C¹ at 0.20, 0.50, 0.80.
+    Final tanh squash keeps values mostly within [-4,4] (adjust squash_range/soft to taste).
+    """
+    device, dtype = x.device, x.dtype
+
+    # Global background (zero-mean-ish to avoid big drift)
+    bg = (
+        0.06*tn.sin(2*tn.pi*1.9*x + 0.2)
+      + 0.05*tn.sin(2*tn.pi*3.7*x + 1.1)
+      + 0.04*tn.cos(2*tn.pi*6.8*x + 0.7)
+    )
+
+    # ---------------- pieces (add oscillatory "texture" terms) ----------------
+    def p1_fun(t):
+        cusp = ((t - 0.08)**2 + eps)**(0.35)
+        base = (0.28*tn.sin(6*tn.pi*t)
+              + 0.25*_chirp(t, 2, 18) * _gauss(t, 0.15, 0.08)
+              + 0.12*cusp
+              + 0.10*(t - 0.10)**3 - 0.09*(t - 0.10)**4
+              + 0.08*_gauss(t, 0.05, 0.03)*tn.sin(80*tn.pi*t))
+        tex  = (
+              0.18*tn.sin(120*tn.pi*t)*_gauss(t, 0.07, 0.025)
+            + 0.14*tn.cos(90*tn.pi*t )*_gauss(t, 0.12, 0.05)
+            + 0.08*tn.sin(2*tn.pi*11.3*t)*tn.sin(2*tn.pi*3.1*t)
+        )
+        return base + texture_gain*tex
+
+    def p2_fun(t):
+        rat1 =  0.10/(1.0 + ((t - 0.27)/0.015)**2)
+        rat2 = -0.08/(1.0 + ((t - 0.44)/0.020)**2)
+        base = (0.30*tn.cos(50*tn.pi*t) * _gauss(t, 0.30, 0.06)
+              + 0.24*tn.sin(120*tn.pi*t)* _gauss(t, 0.38, 0.03)
+              + rat1 + rat2
+              + 0.18*_chirp(t, 14, 5) * _gauss(t, 0.46, 0.10)
+              + 0.06*tn.tanh(35.0*tn.sin(18*tn.pi*t)) * _gauss(t, 0.34, 0.09))
+        tex  = (
+              0.22*tn.sin(180*tn.pi*t)*_gauss(t, 0.33, 0.035)
+            + 0.16*tn.cos(230*tn.pi*t)*_gauss(t, 0.41, 0.028)
+            + 0.10*tn.sin(2*tn.pi*7.7*t) * tn.sin(2*tn.pi*35*t)
+        )
+        return base + texture_gain*tex
+
+    def p3_fun(t):
+        base = (0.26*tn.sin(80*tn.pi*t) * _gauss(t, 0.66, 0.05)
+              + 0.22*tn.cos(160*tn.pi*t)* _gauss(t, 0.72, 0.022)
+              + 0.18*_chirp(t, 28, 8) * _gauss(t, 0.70, 0.11)
+              + 0.05*tn.sin(6*tn.pi*t) * tn.sin(90*tn.pi*t) * _gauss(t, 0.62, 0.07)
+              + 0.07*(t - 0.68)**2 - 0.10*(t - 0.68)**3)
+        tex  = (
+              0.20*tn.sin(200*tn.pi*t)*_gauss(t, 0.64, 0.030)
+            + 0.18*tn.cos(260*tn.pi*t)*_gauss(t, 0.72, 0.020)
+            + 0.10*tn.sin(2*tn.pi*5.5*t) * tn.sin(2*tn.pi*48*t)
+        )
+        return base + texture_gain*tex
+
+    def p4_fun(t):
+        cuspR = ((1.0 - t)**2 + eps)**(0.45)
+        base = (0.24*tn.sin(220*tn.pi*t) * tn.exp(-60.0*(1.0 - t))
+              + 0.16*tn.cos(100*tn.pi*t) * _gauss(t, 0.90, 0.03)
+              + 0.12*cuspR
+              + 0.05/(1.0 + ((t - 0.92)/0.015)**2)
+              + 0.06*(t - 0.86)**4 - 0.08*(t - 0.86)**5)
+        tex  = (
+              0.18*tn.sin(300*tn.pi*t)*_gauss(t, 0.88, 0.020)
+            + 0.12*tn.cos(180*tn.pi*t)*_gauss(t, 0.94, 0.018)
+        )
+        return base + texture_gain*tex
+
+    a1, a2, a3 = 0.20, 0.50, 0.80
+    p1 = p1_fun(x); p2 = p2_fun(x); p3 = p3_fun(x); p4 = p4_fun(x)
+
+    # --------- C¹ corrections: match value & slope at the three joints -------
+    v1, d1 = _val_deriv(p1_fun, a1, device, dtype)
+    v2, d2 = _val_deriv(p2_fun, a1, device, dtype)
+    c0_12, c1_12 = v1 - v2, d1 - d2
+    p2_adj = p2 + c0_12 + c1_12*(x - a1)
+
+    v2_a2, d2_a2 = _val_deriv(p2_fun, a2, device, dtype)
+    vL_a2, dL_a2 = v2_a2 + c0_12 + c1_12*(a2 - a1), d2_a2 + c1_12
+    v3, d3 = _val_deriv(p3_fun, a2, device, dtype)
+    c0_23, c1_23 = vL_a2 - v3, dL_a2 - d3
+    p3_adj = p3 + c0_23 + c1_23*(x - a2)
+
+    v3_a3, d3_a3 = _val_deriv(p3_fun, a3, device, dtype)
+    vL_a3, dL_a3 = v3_a3 + c0_23 + c1_23*(a3 - a2), d3_a3 + c1_23
+    v4, d4 = _val_deriv(p4_fun, a3, device, dtype)
+    c0_34, c1_34 = vL_a3 - v4, dL_a3 - d4
+    p4_adj = p4 + c0_34 + c1_34*(x - a3)
+
+    f_core = tn.where(x < a1, p1,
+              tn.where(x < a2, p2_adj,
+                tn.where(x < a3, p3_adj, p4_adj)))
+
+    # Smooth extras (don’t affect joint regularity)
+    series = sum((0.12/(k**1.25))*tn.sin(2*tn.pi*(1.7*k)*x + 0.3*(k % 3))
+                 for k in range(1, 9))
+    f0 = f_core + bg + 0.10*series
+
+    # ---- Smooth range control to ~[-4,4] (keeps C¹, not C² at the joints) ---
+    f = squash_range * tn.tanh(f0 / squash_soft)
+
+    if noise_std > 0:
+        f = f + noise_std*tn.randn_like(x)
+    return f
+
+def f_h3(x, eps=1e-12, amp=1.0):
+    """
+    Globally C^2 but NOT C^3, via localized (x-a)_+^3 bumps (C^2 hinges).
+    With quadratic-spline interpolation on a uniform grid:
+      ||f - I_h f||_{L2} = O(h^3).
+    (With cubic splines you'll typically see ~h^{3.5-ε}.)
+    """
+    # smooth base (reuse a softened version of f_h4’s ingredients)
+    base = (0.28*tn.sin(16*tn.pi*x) * _gauss(x, 0.20, 0.07)
+          + 0.24*tn.cos(44*tn.pi*x) * _gauss(x, 0.36, 0.05)
+          + 0.20*_chirp(x, 5, 18)         * _gauss(x, 0.58, 0.12)
+          + 0.18*tn.sin(120*tn.pi*x)* _gauss(x, 0.73, 0.03))
+
+    bg = (0.07*tn.sin(2*tn.pi*1.8*x + 0.2)
+        + 0.05*tn.cos(2*tn.pi*3.3*x + 0.9))
+
+    # C^2 “kink-of-order-3” atoms: (x-a)_+^3 * window
+    def c2_bump(x, a, s, w=1.0):
+        return w * tn.relu(x - a)**3 * _gauss(x, a, s)
+
+    kinks = (
+        c2_bump(x, 0.22, 0.030,  +0.8)
+      + c2_bump(x, 0.37, 0.025,  -0.6)
+      + c2_bump(x, 0.61, 0.035,  +0.7)
+      + c2_bump(x, 0.82, 0.022,  -0.5)
+    )
+
+    # symmetric localizers to keep amplitude balanced
+    pads = (
+        -0.6*tn.relu(0.28 - x)**3 * _gauss(x, 0.28, 0.030)
+        +0.5*tn.relu(0.42 - x)**3 * _gauss(x, 0.42, 0.028)
+        -0.5*tn.relu(0.68 - x)**3 * _gauss(x, 0.68, 0.030)
+        +0.4*tn.relu(0.88 - x)**3 * _gauss(x, 0.88, 0.022)
+    )
+
+    f0 = base + bg + kinks + pads
+    return amp * tn.tanh(f0 / 2.5)
